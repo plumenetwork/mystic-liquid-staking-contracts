@@ -1,0 +1,11 @@
+cache/
+out/
+*.DS_Store
+.env
+broadcast/
+.github
+.VSCodeCounter
+deposits/
+deposits/*.json
+node-scripts/node_modules
+bin
