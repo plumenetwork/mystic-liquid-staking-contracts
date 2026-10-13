@@ -47,13 +47,10 @@ contract MyPlumeFeed is Initializable{
         return getPlumeStakedAmount() + stPlumeMinter.currentWithheldETH() - stPlumeMinter.totalInstantUnstaked() - getMyPlumeRewards();
     }
     
-    /// @notice myPLUME/PLUME share price, 1e18-scaled.
-    /// @dev WARNING: not safe to consume as an external price oracle. It depends on
-    ///      {getMyPlumeRewards}, which is malformed (see below): the value does not track the
-    ///      actual accrued/claimable rewards, so this price can drift from the real backing and,
-    ///      as `getMyPlumeRewards` grows past the staked+withheld total, {getTotalDeposits} can
-    ///      underflow and revert. Any integrating lending market / collateral oracle MUST NOT rely
-    ///      on it until {getMyPlumeRewards} is corrected to the protocol's intended rewards figure.
+    /// @notice myPLUME/PLUME solvency ratio, 1e18-scaled (== 1e18 when fully backed, < 1e18 on a shortfall).
+    /// @dev myPLUME is minted/redeemed 1:1 for PLUME principal and rewards are claimed separately
+    ///      (Synthetix-style, in stPlumeRewards), so this is a backing-per-token *solvency* figure,
+    ///      not an appreciating exchange rate — the repo's own fork test asserts it stays ~1e18.
     function getMyPlumePrice() public view returns (uint256) {
         return getTotalDeposits() * 1e18 / myPlume.totalSupply();
     }
@@ -62,17 +59,23 @@ contract MyPlumeFeed is Initializable{
         return plumeStaking.stakeInfo(address(stPlumeMinter)).staked;
     }
 
-    /// @dev KNOWN-INCORRECT: `rewardPerToken()` is the Synthetix *cumulative* reward-per-token
-    ///      index (monotonically increasing since genesis), not a current rewards figure.
-    ///      Multiplying it by the current `totalSupply()` does NOT equal the total accrued rewards
-    ///      across holders — that sum is `Σ balance_i * (rewardPerToken() - userRewardPerTokenPaid_i)`,
-    ///      which cannot be derived globally from a single cumulative index. As written this term
-    ///      grows without bound, corrupting {getTotalDeposits}/{getMyPlumePrice}. The intended
-    ///      semantics (pending-cycle rewards? net undistributed rewards? exclude entirely for an
-    ///      auto-compounding LST?) must be confirmed by the maintainers before fixing — this is
-    ///      flagged rather than silently "corrected" because it feeds a price function.
+    /// @notice Total non-principal PLUME held by the system: the surplus of total backing over the
+    ///         1:1 principal owed to myPLUME holders (accrued rewards + protocol fees sitting in the pool).
+    /// @dev Previously this multiplied the Synthetix *cumulative* `stPlumeRewards.rewardPerToken()`
+    ///      index (monotonically increasing since genesis) by the current `totalSupply()`. That does
+    ///      NOT equal the rewards accrued across holders — the true sum is
+    ///      `sum_i balance_i * (rewardPerToken() - userRewardPerTokenPaid_i)`, which is not derivable
+    ///      from a single cumulative index — so the old term grew without bound, drifting
+    ///      {getMyPlumePrice} and eventually underflow-reverting {getTotalDeposits}.
+    ///
+    ///      Since myPLUME redeems 1:1 for principal, any backing above `totalSupply()` is by definition
+    ///      non-principal (reward/fee) surplus. Computing it directly makes {getTotalDeposits} equal the
+    ///      principal backing (capped at supply) and {getMyPlumePrice} a bounded solvency ratio.
     function getMyPlumeRewards() public view returns (uint256) {
-        return (stPlumeRewards.rewardPerToken() * myPlume.totalSupply()) / 1e18;
+        uint256 backing =
+            getPlumeStakedAmount() + stPlumeMinter.currentWithheldETH() - stPlumeMinter.totalInstantUnstaked();
+        uint256 supply = myPlume.totalSupply();
+        return backing > supply ? backing - supply : 0;
     }
 
     function getMinterStats() public view returns (PlumeStakingStorage.StakeInfo memory) {
