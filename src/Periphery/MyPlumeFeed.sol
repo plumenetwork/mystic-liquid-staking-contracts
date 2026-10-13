@@ -47,16 +47,35 @@ contract MyPlumeFeed is Initializable{
         return getPlumeStakedAmount() + stPlumeMinter.currentWithheldETH() - stPlumeMinter.totalInstantUnstaked() - getMyPlumeRewards();
     }
     
+    /// @notice myPLUME/PLUME solvency ratio, 1e18-scaled (== 1e18 when fully backed, < 1e18 on a shortfall).
+    /// @dev myPLUME is minted/redeemed 1:1 for PLUME principal and rewards are claimed separately
+    ///      (Synthetix-style, in stPlumeRewards), so this is a backing-per-token *solvency* figure,
+    ///      not an appreciating exchange rate — the repo's own fork test asserts it stays ~1e18.
     function getMyPlumePrice() public view returns (uint256) {
         return getTotalDeposits() * 1e18 / myPlume.totalSupply();
     }
-    
+
     function getPlumeStakedAmount() public view returns (uint256) {
         return plumeStaking.stakeInfo(address(stPlumeMinter)).staked;
     }
-    
+
+    /// @notice Total non-principal PLUME held by the system: the surplus of total backing over the
+    ///         1:1 principal owed to myPLUME holders (accrued rewards + protocol fees sitting in the pool).
+    /// @dev Previously this multiplied the Synthetix *cumulative* `stPlumeRewards.rewardPerToken()`
+    ///      index (monotonically increasing since genesis) by the current `totalSupply()`. That does
+    ///      NOT equal the rewards accrued across holders — the true sum is
+    ///      `sum_i balance_i * (rewardPerToken() - userRewardPerTokenPaid_i)`, which is not derivable
+    ///      from a single cumulative index — so the old term grew without bound, drifting
+    ///      {getMyPlumePrice} and eventually underflow-reverting {getTotalDeposits}.
+    ///
+    ///      Since myPLUME redeems 1:1 for principal, any backing above `totalSupply()` is by definition
+    ///      non-principal (reward/fee) surplus. Computing it directly makes {getTotalDeposits} equal the
+    ///      principal backing (capped at supply) and {getMyPlumePrice} a bounded solvency ratio.
     function getMyPlumeRewards() public view returns (uint256) {
-        return (stPlumeRewards.rewardPerToken() * myPlume.totalSupply()) / 1e18;
+        uint256 backing =
+            getPlumeStakedAmount() + stPlumeMinter.currentWithheldETH() - stPlumeMinter.totalInstantUnstaked();
+        uint256 supply = myPlume.totalSupply();
+        return backing > supply ? backing - supply : 0;
     }
 
     function getMinterStats() public view returns (PlumeStakingStorage.StakeInfo memory) {
